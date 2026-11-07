@@ -1,0 +1,101 @@
+name: Build and Release Debug APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Verify Java version
+        run: |
+          java -version
+          echo "JAVA_HOME=$JAVA_HOME"
+
+      - name: Set up Gradle 9.3.1
+        run: |
+          GRADLE_VERSION="9.3.1"
+          URL="https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+          echo "Downloading Gradle $GRADLE_VERSION from $URL..."
+          wget -q "$URL" -O gradle.zip
+          unzip -q gradle.zip
+          sudo mv "gradle-${GRADLE_VERSION}" /opt/gradle
+          echo "/opt/gradle/bin" >> $GITHUB_PATH
+          rm gradle.zip
+
+      - name: Verify Gradle version
+        run: |
+          gradle --version
+
+      - name: Create temporary debug keystore
+        run: |
+          base64 -d debug.keystore.base64 > app/debug.keystore
+
+      - name: Build Debug APK
+        run: |
+          gradle :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: v1.0.0-${{ github.run_number }}-${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
+          name: Debug APK v1.0.0-${{ github.run_number }}-${{ github.run_attempt }}
+          files: app/build/outputs/apk/debug/app-debug.apk
+          make_latest: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Report APK download result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.0-${{ github.run_number }}-${{ github.run_attempt }}"
+          DIRECT_APK_URL="https://github.com/${{ github.repository }}/releases/latest/download/app-debug.apk"
+          if [ "${{ steps.create_release.outcome }}" == "success" ]; then
+            echo "Release publishing succeeded!"
+            gh release view "$TAG" || true
+            echo "Release Tag: $TAG"
+            echo "Release Title: Debug APK $TAG"
+            echo "Release Page URL: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+            echo "APK Filename: app-debug.apk"
+            echo "### DIRECT APK DOWNLOAD" >> $GITHUB_STEP_SUMMARY
+            echo "$DIRECT_APK_URL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Release Page: https://github.com/${{ github.repository }}/releases/tag/$TAG" >> $GITHUB_STEP_SUMMARY
+            echo "- The normal Actions artifact \`app-debug-apk\` remains available as a backup." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::warning::Release publishing failed or was skipped, but the APK build succeeded if compiled!"
+            echo "The Actions artifact named 'app-debug-apk' remains available."
+            echo "### GitHub Release Failed / Skipped (Warning)" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Release publishing failed, but the APK build succeeded and \`app-debug-apk\` remains available in Actions artifacts." >> $GITHUB_STEP_SUMMARY
+          fi
